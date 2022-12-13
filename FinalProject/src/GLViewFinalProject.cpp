@@ -1,0 +1,929 @@
+#include "GLViewFinalProject.h"
+
+#include "WorldList.h" //This is where we place all of our WOs
+#include "ManagerOpenGLState.h" //We can change OpenGL State attributes with this
+#include "Axes.h" //We can set Axes to on/off with this
+#include "PhysicsEngineODE.h"
+
+//Different WO used by this module
+#include "WO.h"
+#include "WOStatic.h"
+#include "WOStaticPlane.h"
+#include "WOStaticTrimesh.h"
+#include "WOTrimesh.h"
+#include "WOHumanCyborg.h"
+#include "WOHumanCal3DPaladin.h"
+#include "WOWayPointSpherical.h"
+#include "WOLight.h"
+#include "WOSkyBox.h"
+#include "WOCar1970sBeater.h"
+#include "Camera.h"
+#include "CameraStandard.h"
+#include "CameraChaseActorSmooth.h"
+#include "CameraChaseActorAbsNormal.h"
+#include "CameraChaseActorRelNormal.h"
+#include "Model.h"
+#include "ModelDataShared.h"
+#include "ModelMesh.h"
+#include "ModelMeshDataShared.h"
+#include "ModelMeshSkin.h"
+#include "WONVStaticPlane.h"
+#include "WONVPhysX.h"
+#include "WONVDynSphere.h"
+#include "WOImGui.h" //GUI Demos also need to #include "AftrImGuiIncludes.h"
+#include "AftrImGuiIncludes.h"
+#include "AftrGLRendererBase.h"
+#include "NetMessengerClient.h"
+#include "GLSLShader.h"
+#include "GLSLShaderPerVertexColorGL32.h"
+#include "AftrUtilities.h"
+
+#include "WOGridECEFElevation.h"
+#include <vector>
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <sstream>
+#include <WOFTGLString.h>
+#include "WOGUILabel.h"
+#include <MGLFTGLString.h>
+
+using namespace Aftr;
+using namespace std;
+std::string comicSans(ManagerEnvironmentConfiguration::getSMM() + "/fonts/COMIC.ttf");
+
+GLViewFinalProject* GLViewFinalProject::New(const std::vector< std::string >& args)
+{
+	GLViewFinalProject* glv = new GLViewFinalProject(args);
+	glv->init(Aftr::GRAVITY, Vector(0, 0, -1.0f), "aftr.conf", PHYSICS_ENGINE_TYPE::petODE);
+	glv->onCreate();
+	return glv;
+}
+
+GLViewFinalProject::GLViewFinalProject(const std::vector< std::string >& args) : GLView(args)
+{
+	//Initialize any member variables that need to be used inside of LoadMap() here.
+	//Note: At this point, the Managers are not yet initialized. The Engine initialization
+	//occurs immediately after this method returns (see GLViewFinalProject::New() for
+	//reference). Then the engine invoke's GLView::loadMap() for this module.
+	//After loadMap() returns, GLView::onCreate is finally invoked.
+
+	//The order of execution of a module startup:
+	//GLView::New() is invoked:
+	//    calls GLView::init()
+	//       calls GLView::loadMap() (as well as initializing the engine's Managers)
+	//    calls GLView::onCreate()
+
+	//GLViewFinalProject::onCreate() is invoked after this module's LoadMap() is completed.
+
+	labelText = "Hue";
+	temp = false;
+}
+
+
+void GLViewFinalProject::onCreate()
+{
+	//GLViewFinalProject::onCreate() is invoked after this module's LoadMap() is completed.
+	//At this point, all the managers are initialized. That is, the engine is fully initialized.
+
+	if (this->pe != NULL)
+	{
+		//optionally, change gravity direction and magnitude here
+		//The user could load these values from the module's aftr.conf
+		this->pe->setGravityNormalizedVector(Vector(0, 0, -1.0f));
+		this->pe->setGravityScalar(Aftr::GRAVITY);
+	}
+	this->setActorChaseType(STANDARDEZNAV); //Default is STANDARDEZNAV mode
+	//this->setNumPhysicsStepsPerRender( 0 ); //pause physics engine on start up; will remain paused till set to 1
+}
+
+
+GLViewFinalProject::~GLViewFinalProject()
+{
+	//Implicitly calls GLView::~GLView()
+}
+
+
+void GLViewFinalProject::updateWorld()
+{
+	GLView::updateWorld(); //Just call the parent's update world first.
+						   //If you want to add additional functionality, do it after
+						   //this call.
+}
+
+
+void GLViewFinalProject::onResizeWindow(GLsizei width, GLsizei height)
+{
+	GLView::onResizeWindow(width, height); //call parent's resize method.
+}
+
+
+void GLViewFinalProject::onMouseDown(const SDL_MouseButtonEvent& e)
+{
+	GLView::onMouseDown(e);
+}
+
+
+void GLViewFinalProject::onMouseUp(const SDL_MouseButtonEvent& e)
+{
+	GLView::onMouseUp(e);
+}
+
+
+void GLViewFinalProject::onMouseMove(const SDL_MouseMotionEvent& e)
+{
+	GLView::onMouseMove(e);
+}
+
+
+void GLViewFinalProject::onKeyDown(const SDL_KeyboardEvent& key)
+{
+	GLView::onKeyDown(key);
+	if (key.keysym.sym == SDLK_0)
+		this->setNumPhysicsStepsPerRender(1);
+}
+
+
+void GLViewFinalProject::onKeyUp(const SDL_KeyboardEvent& key)
+{
+	GLView::onKeyUp(key);
+}
+
+
+void Aftr::GLViewFinalProject::loadMap()
+{
+	this->worldLst = new WorldList(); //WorldList is a 'smart' vector that is used to store WO*'s
+	this->actorLst = new WorldList();
+	this->netLst = new WorldList();
+
+	ManagerOpenGLState::GL_CLIPPING_PLANE = 1000.0;
+	ManagerOpenGLState::GL_NEAR_PLANE = 0.1f;
+	ManagerOpenGLState::enableFrustumCulling = false;
+	Axes::isVisible = true;
+	this->glRenderer->isUsingShadowMapping(false); //set to TRUE to enable shadow mapping, must be using GL 3.2+
+
+	this->cam->setPosition(15, 15, 10);
+
+	std::string shinyRedPlasticCube(ManagerEnvironmentConfiguration::getSMM() + "/models/cube4x4x4redShinyPlastic_pp.wrl");
+	std::string wheeledCar(ManagerEnvironmentConfiguration::getSMM() + "/models/rcx_treads.wrl");
+	std::string grass(ManagerEnvironmentConfiguration::getSMM() + "/models/grassFloor400x400_pp.wrl");
+	std::string human(ManagerEnvironmentConfiguration::getSMM() + "/models/human_chest.wrl");
+	/*std::string jet(ManagerEnvironmentConfiguration::getSMM() + "/models/jet_wheels_down_PP.wrl");*/
+
+	//SkyBox Textures readily available
+	std::vector< std::string > skyBoxImageNames; //vector to store texture paths
+	skyBoxImageNames.push_back(ManagerEnvironmentConfiguration::getSMM() + "/images/skyboxes/sky_mountains+6.jpg");
+	//skyBoxImageNames.push_back(ManagerEnvironmentConfiguration::getSMM() + "/images/skyboxes/space_lemon_lime+6.jpg");
+
+	{
+		//Create a light
+		float ga = 0.1f; //Global Ambient Light level for this module
+		ManagerLight::setGlobalAmbientLight(aftrColor4f(ga, ga, ga, 1.0f));
+		WOLight* light = WOLight::New();
+		light->isDirectionalLight(true);
+		light->setPosition(Vector(0, 0, 100));
+		//Set the light's display matrix such that it casts light in a direction parallel to the -z axis (ie, downwards as though it was "high noon")
+		//for shadow mapping to work, this->glRenderer->isUsingShadowMapping( true ), must be invoked.
+		light->getModel()->setDisplayMatrix(Mat4::rotateIdentityMat({ 0, 1, 0 }, 90.0f * Aftr::DEGtoRAD));
+		light->setLabel("Light");
+		worldLst->push_back(light);
+	}
+
+	{
+		//Create the SkyBox
+		WO* wo = WOSkyBox::New(skyBoxImageNames.at(0), this->getCameraPtrPtr());
+		wo->setPosition(Vector(0, 0, 0));
+		wo->setLabel("Sky Box");
+		wo->renderOrderType = RENDER_ORDER_TYPE::roOPAQUE;
+		worldLst->push_back(wo);
+	}
+
+	createFinalProjectWayPoints();
+
+	WOImGui* gui = WOImGui::New(nullptr);
+	gui->setLabel("My Gui");
+	gui->subscribe_drawImGuiWidget(
+		[this, gui]() //this is a lambda, the capture clause is in [], the input argument list is in (), and the body is in {}
+		{
+			ImGui::Begin("My GUI");//creates a new window 
+
+			if (ImGui::Button("Generate Grid for Visibility")) {
+				std::ifstream fin1, fin2, fin3;
+				vector<string> row1;
+				vector<string> row2;
+				vector<string> row3;
+				string line1, line2, line3, word1, word2, word3;
+				std::vector<std::vector<Aftr::VectorD>> gridpt;
+				std::vector<std::vector<Aftr::aftrColor4ub>> color;
+
+				string arr[1600][3];
+
+				//cout << "my values***************************************************************8" << endl;
+				fin1.open("C:/repos/repo_distro/aburn/usr/modules/FinalProject/mm/project/x.csv", ios::in);
+				fin2.open("C:/repos/repo_distro/aburn/usr/modules/FinalProject/mm/project/y.csv", ios::in);
+				fin3.open("C:/repos/repo_distro/aburn/usr/modules/FinalProject/mm/project/visibility.csv", ios::in);
+
+				int row_index = 0;
+				int line_count = 0;
+				if (fin1.is_open() && fin2.is_open() && fin3.is_open())
+				{
+					//cout << "my values***************************************************************8open" << endl;
+					while (getline(fin1, line1) && getline(fin2, line2) && getline(fin3, line3))
+					{
+						/*line_count++;
+						cout << "line count" << line_count << endl;*/
+						row1.clear();
+						row2.clear();
+						row3.clear();
+
+						stringstream str1(line1);
+						stringstream str2(line2);
+						stringstream str3(line3);
+
+						//cout << "line " << line1 << endl;
+
+						while (getline(str1, word1, ','))
+							row1.push_back(word1);
+						while (getline(str2, word2, ','))
+							row2.push_back(word2);
+						while (getline(str3, word3, ','))
+							row3.push_back(word3);
+
+						for (int i = 0; i < 40; i++)
+						{
+							//cout << row_index << " row values:" << endl;
+							//cout << row1[i] << "," << row2[i] << "," << row3[i] << endl;
+							arr[row_index][0] = row1[i];
+							arr[row_index][1] = row2[i];
+							arr[row_index][2] = row3[i];
+							row_index++;
+						}
+					}
+
+				}
+				else {
+					cout << "Could not open the file\n";
+				}
+
+
+				/*for (int z = 0; z < 600; z++) {
+					cout << arr[z][0] << "," << arr[z][1] << "," << arr[z][2] << endl;*/
+				int z = 0;
+
+				for (int i = 0; i < 40; ++i) {
+					gridpt.push_back(std::vector<Aftr::VectorD>(0));
+					color.push_back(std::vector<Aftr::aftrColor4ub>(0));
+					gridpt[i].resize(40);
+					color[i].resize(40);
+
+					for (int j = 0; j < 40; ++j) {
+						gridpt[i][j] = VectorD(stod(arr[z][0]), stod(arr[z][1]), stod(arr[z][2]));
+						
+						double minZ = gridpt[0][0].z;
+						double maxZ = gridpt[0][0].z;
+						double minX = gridpt[0][0].x;
+						double maxX = gridpt[0][0].x;
+						double minY = gridpt[0][0].y;
+						double maxY = gridpt[0][0].y;
+
+						if (gridpt[i][j].x < minX) {
+							minX = gridpt[i][j].x;
+						}
+						else {
+							maxX = gridpt[i][j].x;
+						}
+						if (gridpt[i][j].y < minY) {
+							minY = gridpt[i][j].y;
+						}
+						else {
+							maxY = gridpt[i][j].y;
+						}
+						if (gridpt[i][j].z < minZ) {
+							minZ = gridpt[i][j].z;
+						}
+						else {
+							maxZ = gridpt[i][j].z;
+						}
+
+						double mX = 21.1381;
+						double maX = 22.3815;
+						double mY = 236.984;
+						double maY = 238.323;
+						double mZ = 15.000;
+						double maZ = 24.500;
+
+						gridpt[i][j].x = (stod(arr[z][0]) - mX) * 100;
+						gridpt[i][j].y = (stod(arr[z][1]) - mY) * 100;
+						gridpt[i][j].z = stod(arr[z][2]) / 1000;
+
+						/*cout << "min Z value*******************************" << minZ << endl;
+						cout << "max Z value*******************************" << maxZ << endl;
+
+						cout << "min Y value*******************************" << minY << endl;
+						cout << "max Y value*******************************" << maxY << endl;
+
+						cout << "min X value*******************************" << minX << endl;
+						cout << "max X value*******************************" << maxX << endl;
+
+						cout << gridpt[i][j] << endl;*/
+
+						z++;
+
+						float c = (float)gridpt[i][j].z;
+						//cout << c << endl;
+						float value = 0;
+						if (c < mZ) {
+							value = 0;
+						}
+						else if (c > maZ) {
+							value = 1;
+						}
+						else {
+							value = (c - mZ) / (maZ - mZ);
+						}
+						Vector hsv = { value * (5.0f / 6.0f), 1, 1 };
+						color[i][j] = AftrUtilities::convertHSVtoRGB(hsv);
+					}
+				}
+
+				WOGrid* heightField = WOGrid::New(gridpt, Vector(1, 1, 1), color);
+
+				ModelMeshSkin& hfSkin = heightField->getModel()->getModelDataShared()->getModelMeshes().at(0)->getSkins().at(0);
+				hfSkin.getMultiTextureSet().at(0)->setTextureRepeats(5.0f);
+				hfSkin.setAmbient(aftrColor4f(0.4f, 0.4f, 0.4f, 1.0f)); //Color of object when it is not in any light
+				hfSkin.setDiffuse(aftrColor4f(1.0f, 1.0f, 1.0f, 1.0f)); //Diffuse color components (ie, matte shading color of this object)
+				hfSkin.setSpecular(aftrColor4f(0.4f, 0.4f, 0.4f, 1.0f)); //Specular color component (ie, how "shiney" it is)
+				hfSkin.setSpecularCoefficient(10);
+				std::string vertexShader = ManagerEnvironmentConfiguration::getSMM() + "/shaders/defaultGL32.vert";
+				std::string fragmentShader = ManagerEnvironmentConfiguration::getSMM() + "/shaders/defaultGL32PerVertexColor.frag";
+				hfSkin.setShader(GLSLShaderPerVertexColorGL32::New());
+
+				worldLst->push_back(heightField);
+			}
+
+			if (ImGui::Button("Generate Grid for Temperature")) {
+				std::ifstream fin1, fin2, fin3;
+				vector<string> row1;
+				vector<string> row2;
+				vector<string> row3;
+				string line1, line2, line3, word1, word2, word3;
+				std::vector<std::vector<Aftr::VectorD>> gridpt;
+				std::vector<std::vector<Aftr::aftrColor4ub>> color;
+
+				string arr[1600][3];
+
+				//cout << "my values***************************************************************8" << endl;
+				fin1.open("C:/repos/repo_distro/aburn/usr/modules/FinalProject/mm/project/x.csv", ios::in);
+				fin2.open("C:/repos/repo_distro/aburn/usr/modules/FinalProject/mm/project/y.csv", ios::in);
+				fin3.open("C:/repos/repo_distro/aburn/usr/modules/FinalProject/mm/project/temperature.csv", ios::in);
+
+				int row_index = 0;
+				int line_count = 0;
+				if (fin1.is_open() && fin2.is_open() && fin3.is_open())
+				{
+					//cout << "my values***************************************************************8open" << endl;
+					while (getline(fin1, line1) && getline(fin2, line2) && getline(fin3, line3))
+					{
+						/*line_count++;
+						cout << "line count" << line_count << endl;*/
+						row1.clear();
+						row2.clear();
+						row3.clear();
+
+						stringstream str1(line1);
+						stringstream str2(line2);
+						stringstream str3(line3);
+
+						//cout << "line " << line1 << endl;
+
+						while (getline(str1, word1, ','))
+							row1.push_back(word1);
+						while (getline(str2, word2, ','))
+							row2.push_back(word2);
+						while (getline(str3, word3, ','))
+							row3.push_back(word3);
+
+						for (int i = 0; i < 40; i++)
+						{
+							/*cout << row_index << " row values:" << endl;
+							cout << row1[i] << "," << row2[i] << "," << row3[i] << endl;*/
+							arr[row_index][0] = row1[i];
+							arr[row_index][1] = row2[i];
+							arr[row_index][2] = row3[i];
+							row_index++;
+						}
+					}
+
+				}
+				else {
+					cout << "Could not open the file\n";
+				}
+
+
+				/*for (int z = 0; z < 600; z++) {
+					cout << arr[z][0] << "," << arr[z][1] << "," << arr[z][2] << endl;*/
+				int z = 0;
+				for (int i = 0; i < 40; ++i) {
+					std::vector<Aftr::VectorD> v;
+
+					gridpt.push_back(std::vector<Aftr::VectorD>(0));
+					color.push_back(std::vector<Aftr::aftrColor4ub>(0));
+					gridpt[i].resize(40);
+					color[i].resize(40);
+
+					for (int j = 0; j < 40; ++j) {
+						gridpt[i][j] = VectorD(stod(arr[z][0]), stod(arr[z][1]), stod(arr[z][2]));
+
+						double minZ = gridpt[0][0].z;
+						double maxZ = gridpt[0][0].z;
+						double minX = gridpt[0][0].x;
+						double maxX = gridpt[0][0].x;
+						double minY = gridpt[0][0].y;
+						double maxY = gridpt[0][0].x;
+
+						if (gridpt[i][j].x < minX) {
+							minX = gridpt[i][j].x;
+						}
+						else {
+							maxX = gridpt[i][j].x;
+						}
+						if (gridpt[i][j].y < minY) {
+							minY = gridpt[i][j].y;
+						}
+						else {
+							maxY = gridpt[i][j].y;
+						}
+						if (gridpt[i][j].z < minZ) {
+							minZ = gridpt[i][j].z;
+						}
+						else {
+							maxZ = gridpt[i][j].z;
+						}
+
+						double mX = 21.1381;
+						double maX = 22.3815;
+						double mY = 236.984;
+						double maY = 238.323;
+						double mZ = 292.425;
+						double maZ = 294.05;
+
+						gridpt[i][j].x = (stod(arr[z][0]) - mX) * 100;
+						gridpt[i][j].y = (stod(arr[z][1]) - mY) * 100;
+						gridpt[i][j].z = (stod(arr[z][2]) - mZ) * 10;
+						/*cout << gridpt[i][j] << endl;
+
+						cout << "min X value*******************************" << minX << endl;
+						cout << "max X value*******************************" << maxX << endl;
+
+						cout << "min Y value*******************************" << minY << endl;
+						cout << "max Y value*******************************" << maxY << endl;
+
+						cout << "min Z value*******************************" << minZ << endl;
+						cout << "max Z value*******************************" << maxZ << endl;*/
+
+						z++;
+						
+						double c = gridpt[i][j].z;
+						//cout << c << endl;
+
+						double min = 0.0005;
+						double max = 16.2505;
+
+						/*if (c < min) {
+							min = c;
+						}
+						else {
+							max = c;
+						}
+						cout << "min c value*******************************" << min << endl;
+						cout << "max c value*******************************" << max << endl; */
+
+						float value = 0;
+						if (c < min) {
+							value = 0;
+						}
+						else if (c > max) {
+							value = 1;
+						}
+						else {
+							value = (c - min) / (max - min);
+						}
+						Vector hsv = { value * (5.0f / 6.0f), 1, 1 };
+						color[i][j] = AftrUtilities::convertHSVtoRGB(hsv);
+					}
+				}
+
+				WOGrid* heightField = WOGrid::New(gridpt, Vector(1, 1, 1), color);
+
+				ModelMeshSkin& hfSkin = heightField->getModel()->getModelDataShared()->getModelMeshes().at(0)->getSkins().at(0);
+				hfSkin.getMultiTextureSet().at(0)->setTextureRepeats(5.0f);
+				hfSkin.setAmbient(aftrColor4f(0.4f, 0.4f, 0.4f, 1.0f)); //Color of object when it is not in any light
+				hfSkin.setDiffuse(aftrColor4f(1.0f, 1.0f, 1.0f, 1.0f)); //Diffuse color components (ie, matte shading color of this object)
+				hfSkin.setSpecular(aftrColor4f(0.4f, 0.4f, 0.4f, 1.0f)); //Specular color component (ie, how "shiney" it is)
+				hfSkin.setSpecularCoefficient(10);
+				std::string vertexShader = ManagerEnvironmentConfiguration::getSMM() + "/shaders/defaultGL32.vert";
+				std::string fragmentShader = ManagerEnvironmentConfiguration::getSMM() + "/shaders/defaultGL32PerVertexColor.frag";
+				hfSkin.setShader(GLSLShaderPerVertexColorGL32::New());
+
+				worldLst->push_back(heightField);
+			}
+
+			if (ImGui::Button("Generate Grid for Geopotential Height")) {
+				std::ifstream fin1, fin2, fin3;
+				vector<string> row1;
+				vector<string> row2;
+				vector<string> row3;
+				string line1, line2, line3, word1, word2, word3;
+				std::vector<std::vector<Aftr::VectorD>> gridpt;
+				std::vector<std::vector<Aftr::aftrColor4ub>> color;
+
+				string arr[1600][3];
+
+				//cout << "my values***************************************************************8" << endl;
+				fin1.open("C:/repos/repo_distro/aburn/usr/modules/FinalProject/mm/project/x.csv", ios::in);
+				fin2.open("C:/repos/repo_distro/aburn/usr/modules/FinalProject/mm/project/y.csv", ios::in);
+				fin3.open("C:/repos/repo_distro/aburn/usr/modules/FinalProject/mm/project/gh.csv", ios::in);
+				//fin3.open("C:\\visibility.csv", ios::in);
+
+				int row_index = 0;
+				int line_count = 0;
+				if (fin1.is_open() && fin2.is_open() && fin3.is_open())
+				{
+					//cout << "my values***************************************************************8open" << endl;
+					while (getline(fin1, line1) && getline(fin2, line2) && getline(fin3, line3))
+					{
+						line_count++;
+						//cout << "line count" << line_count << endl;
+						row1.clear();
+						row2.clear();
+						row3.clear();
+
+						stringstream str1(line1);
+						stringstream str2(line2);
+						stringstream str3(line3);
+
+						//cout << "line " << line1 << endl;
+
+						while (getline(str1, word1, ',')) {
+							row1.push_back(word1);
+						}
+						while (getline(str2, word2, ',')) {
+							row2.push_back(word2);
+						}
+						while (getline(str3, word3, ',')) {
+							row3.push_back(word3);
+						}
+
+						for (int i = 0; i < 40; i++)
+						{
+							/*cout << row_index << " row values:" << endl;
+							cout << row1[i] << "," << row2[i] << "," << row3[i] << endl;*/
+							arr[row_index][0] = row1[i];
+							arr[row_index][1] = row2[i];
+							arr[row_index][2] = row3[i];
+							row_index++;
+						}
+					}
+
+				}
+				else {
+					cout << "Could not open the file\n";
+				}
+
+				/*for (int z = 0; z < 1600; z++) {
+					cout << arr[z][0] << "," << arr[z][1] << "," << arr[z][2] << endl;
+				}*/
+
+				int z = 0;
+				double currval = 0;
+				double min = 0;
+				double max = 0;
+				for (int i = 0; i < 40; ++i) {
+					//std::vector<Aftr::VectorD> v;
+
+					gridpt.push_back(std::vector<Aftr::VectorD>(0));
+					color.push_back(std::vector<Aftr::aftrColor4ub>(0));
+					gridpt[i].resize(40);
+					color[i].resize(40);
+
+					for (int j = 0; j < 40; ++j) {
+						gridpt[i][j] = VectorD(stod(arr[z][0]), stod(arr[z][1]), stod(arr[z][2]));
+
+						double minZ = gridpt[0][0].z;
+						double maxZ = gridpt[0][0].z;
+						double minX = gridpt[0][0].x;
+						double maxX = gridpt[0][0].x;
+						double minY = gridpt[0][0].y;
+						double maxY = gridpt[0][0].x;
+
+						if (gridpt[i][j].x < minX) {
+							minX = gridpt[i][j].x;
+						}
+						else {
+							maxX = gridpt[i][j].x;
+						}
+						if (gridpt[i][j].y < minY) {
+							minY = gridpt[i][j].y;
+						}
+						else {
+							maxY = gridpt[i][j].y;
+						}
+						if (gridpt[i][j].z < minZ) {
+							minZ = gridpt[i][j].z;
+						}
+						else {
+							maxZ = gridpt[i][j].z;
+						}
+
+						/*cout << gridpt[i][j] << endl;
+
+						cout << "min X value*******************************" << minX << endl;
+						cout << "max X value*******************************" << maxX << endl;
+
+						cout << "min Y value*******************************" << minY << endl;
+						cout << "max Y value*******************************" << maxY << endl;
+
+						cout << "min Z value*******************************" << minZ << endl;
+						cout << "max Z value*******************************" << maxZ << endl;*/
+
+						double mX = 21.1381;
+						double maX = 22.3815;
+						double mY = 236.984;
+						double maY = 238.323;
+						double mZ = 144.552;
+						double maZ = 153.302;
+			                   
+						/*cout << "min Z value*******************************" << min << endl;
+						cout << "max Z value*******************************" << max << endl;*/
+
+						gridpt[i][j].x = (stod(arr[z][0]) - mX) * 100;
+						gridpt[i][j].y = (stod(arr[z][1]) - mY) * 100;
+						gridpt[i][j].z = (stod(arr[z][2]) - mZ);
+
+						z++;
+
+						double c = gridpt[i][j].z;
+						//cout << c << endl;
+
+						double min = 0.0001;
+						double max = 8.7501;
+
+						/*if (c < min) {
+							min = c;
+						}
+						else {
+							max = c;
+						}
+						cout << "min c value*******************************" << min << endl;
+						cout << "max c value*******************************" << max << endl; */
+
+						float value = 0;
+						if (c < min) {
+							value = 0;
+						}
+						else if (c > max) {
+							value = 1;
+						}
+						else {
+							value = (c - min) / (max - min);
+						}
+						Vector hsv = { value * (5.0f / 6.0f), 1, 1 };
+						color[i][j] = AftrUtilities::convertHSVtoRGB(hsv);
+					}
+				}
+
+				WOGrid* heightField = WOGrid::New(gridpt, Vector(1, 1, 1), color);
+
+				ModelMeshSkin& hfSkin = heightField->getModel()->getModelDataShared()->getModelMeshes().at(0)->getSkins().at(0);
+				hfSkin.getMultiTextureSet().at(0)->setTextureRepeats(5.0f);
+				hfSkin.setAmbient(aftrColor4f(0.4f, 0.4f, 0.4f, 1.0f)); //Color of object when it is not in any light
+				hfSkin.setDiffuse(aftrColor4f(1.0f, 1.0f, 1.0f, 1.0f)); //Diffuse color components (ie, matte shading color of this object)
+				hfSkin.setSpecular(aftrColor4f(0.4f, 0.4f, 0.4f, 1.0f)); //Specular color component (ie, how "shiney" it is)
+				hfSkin.setSpecularCoefficient(10);
+				std::string vertexShader = ManagerEnvironmentConfiguration::getSMM() + "/shaders/defaultGL32.vert";
+				std::string fragmentShader = ManagerEnvironmentConfiguration::getSMM() + "/shaders/defaultGL32PerVertexColor.frag";
+				hfSkin.setShader(GLSLShaderPerVertexColorGL32::New());
+
+				worldLst->push_back(heightField);
+			}
+
+			if (ImGui::Button("Generate Grid for Pressure")) {
+				std::ifstream fin1, fin2, fin3;
+				vector<string> row1;
+				vector<string> row2;
+				vector<string> row3;
+				string line1, line2, line3, word1, word2, word3;
+				std::vector<std::vector<Aftr::VectorD>> gridpt;
+				std::vector<std::vector<Aftr::aftrColor4ub>> color;
+
+				string arr[1600][3];
+
+				//cout << "my values***************************************************************8" << endl;
+				fin1.open("C:/repos/repo_distro/aburn/usr/modules/FinalProject/mm/project/x.csv", ios::in);
+				fin2.open("C:/repos/repo_distro/aburn/usr/modules/FinalProject/mm/project/y.csv", ios::in);
+				fin3.open("C:/repos/repo_distro/aburn/usr/modules/FinalProject/mm/project/pressure.csv", ios::in);
+
+				int row_index = 0;
+				int line_count = 0;
+				if (fin1.is_open() && fin2.is_open() && fin3.is_open())
+				{
+					//cout << "my values***************************************************************8open" << endl;
+					while (getline(fin1, line1) && getline(fin2, line2) && getline(fin3, line3))
+					{
+						line_count++;
+						//cout << "line count" << line_count << endl;
+						row1.clear();
+						row2.clear();
+						row3.clear();
+
+						stringstream str1(line1);
+						stringstream str2(line2);
+						stringstream str3(line3);
+
+						//cout << "line " << line1 << endl;
+
+						while (getline(str1, word1, ',')) {
+							row1.push_back(word1);
+						}
+						while (getline(str2, word2, ',')) {
+							row2.push_back(word2);
+						}
+						while (getline(str3, word3, ',')) {
+							row3.push_back(word3);
+						}
+
+						for (int i = 0; i < 40; i++)
+						{
+							/*cout << row_index << " row values:" << endl;
+							cout << row1[i] << "," << row2[i] << "," << row3[i] << endl;*/
+							arr[row_index][0] = row1[i];
+							arr[row_index][1] = row2[i];
+							arr[row_index][2] = row3[i];
+							row_index++;
+						}
+					}
+
+				}
+				else {
+					cout << "Could not open the file\n";
+				}
+
+				/*for (int z = 0; z < 1600; z++) {
+					cout << arr[z][0] << "," << arr[z][1] << "," << arr[z][2] << endl;
+				}*/
+
+				int z = 0;
+				double currval = 0;
+				double min = 0;
+				double max = 0;
+				for (int i = 0; i < 40; ++i) {
+					//std::vector<Aftr::VectorD> v;
+
+					gridpt.push_back(std::vector<Aftr::VectorD>(0));
+					color.push_back(std::vector<Aftr::aftrColor4ub>(0));
+					gridpt[i].resize(40);
+					color[i].resize(40);
+
+					for (int j = 0; j < 40; ++j) {
+						gridpt[i][j] = VectorD(stod(arr[z][0]), stod(arr[z][1]), stod(arr[z][2]));
+
+						double minZ = gridpt[0][0].z;
+						double maxZ = gridpt[0][0].z;
+						double minX = gridpt[0][0].x;
+						double maxX = gridpt[0][0].x;
+						double minY = gridpt[0][0].y;
+						double maxY = gridpt[0][0].x;
+
+						if (gridpt[i][j].x < minX) {
+							minX = gridpt[i][j].x;
+						}
+						else {
+							maxX = gridpt[i][j].x;
+						}
+						if (gridpt[i][j].y < minY) {
+							minY = gridpt[i][j].y;
+						}
+						else {
+							maxY = gridpt[i][j].y;
+						}
+						if (gridpt[i][j].z < minZ) {
+							minZ = gridpt[i][j].z;
+						}
+						else {
+							maxZ = gridpt[i][j].z;
+						}
+
+						/*cout << gridpt[i][j] << endl;
+
+						cout << "min X value*******************************" << minX << endl;
+						cout << "max X value*******************************" << maxX << endl;
+
+						cout << "min Y value*******************************" << minY << endl;
+						cout << "max Y value*******************************" << maxY << endl;
+
+						cout << "min Z value*******************************" << minZ << endl;
+						cout << "max Z value*******************************" << maxZ << endl;*/
+
+						double mX = 21.1381;
+						double maX = 22.3815;
+						double mY = 236.984;
+						double maY = 238.323;
+						double mZ = 100732.67;
+						double maZ = 100852.67;
+
+						/*cout << "min Z value*******************************" << min << endl;
+						cout << "max Z value*******************************" << max << endl;*/
+
+						gridpt[i][j].x = (stod(arr[z][0]) - mX) * 100;
+						gridpt[i][j].y = (stod(arr[z][1]) - mY) * 100;
+						gridpt[i][j].z = (stod(arr[z][2]) - mZ)/10;
+
+						z++;
+
+						double c = gridpt[i][j].z;
+						//cout << c << endl;
+
+						double min = 0;
+						double max = 12;
+
+						/*if (c < min) {
+							min = c;
+						}
+						else {
+							max = c;
+						}
+						cout << "min c value*******************************" << min << endl;
+						cout << "max c value*******************************" << max << endl; */
+
+						float value = 0;
+						if (c < min) {
+							value = 0;
+						}
+						else if (c > max) {
+							value = 1;
+						}
+						else {
+							value = (c - min) / (max - min);
+						}
+						Vector hsv = { value * (5.0f / 6.0f), 1, 1 };
+						color[i][j] = AftrUtilities::convertHSVtoRGB(hsv);
+					}
+				}
+
+				WOGrid* heightField = WOGrid::New(gridpt, Vector(1, 1, 1), color);
+
+				ModelMeshSkin& hfSkin = heightField->getModel()->getModelDataShared()->getModelMeshes().at(0)->getSkins().at(0);
+				hfSkin.getMultiTextureSet().at(0)->setTextureRepeats(5.0f);
+				hfSkin.setAmbient(aftrColor4f(0.4f, 0.4f, 0.4f, 1.0f)); //Color of object when it is not in any light
+				hfSkin.setDiffuse(aftrColor4f(1.0f, 1.0f, 1.0f, 1.0f)); //Diffuse color components (ie, matte shading color of this object)
+				hfSkin.setSpecular(aftrColor4f(0.4f, 0.4f, 0.4f, 1.0f)); //Specular color component (ie, how "shiney" it is)
+				hfSkin.setSpecularCoefficient(10);
+				std::string vertexShader = ManagerEnvironmentConfiguration::getSMM() + "/shaders/defaultGL32.vert";
+				std::string fragmentShader = ManagerEnvironmentConfiguration::getSMM() + "/shaders/defaultGL32PerVertexColor.frag";
+				hfSkin.setShader(GLSLShaderPerVertexColorGL32::New());
+
+				worldLst->push_back(heightField);
+			}
+
+			if (ImGui::Button("Delete Grid")) {
+				deleteGrid();
+			}
+
+			ImGui::End();//finalizes a window
+
+		});
+
+	this->worldLst->push_back(gui);
+}
+
+
+void GLViewFinalProject::createFinalProjectWayPoints()
+{
+	// Create a waypoint with a radius of 3, a frequency of 5 seconds, activated by GLView's camera, and is visible.
+	WayPointParametersBase params(this);
+	params.frequency = 5000;
+	params.useCamera = true;
+	params.visible = true;
+	WOWayPointSpherical* wayPt = WOWayPointSpherical::New(params, 3);
+	wayPt->setPosition(Vector(-20, -20, 3));
+	worldLst->push_back(wayPt);
+}
+
+void GLViewFinalProject::deleteGrid() {
+	temp = false;
+	if (worldLst->size() > 1) {
+		worldLst->eraseViaWOIndex(worldLst->size() - 1);
+	}
+}
+
+//void GLViewFinalProject::displayLabel() {
+//	std::string comicSans(ManagerEnvironmentConfiguration::getSMM() + "/fonts/COMIC.ttf");
+//	chatLabel = WOGUILabel::New(nullptr);
+//	chatLabel->setText(labelText.c_str());
+//	chatLabel->setColor(200, 200, 200);
+//	chatLabel->setFontSize(30);
+//	chatLabel->setPosition(Vector(0.5, 0.15, 0));
+//	chatLabel->setFontOrientation(FONT_ORIENTATION::foCENTER);
+//	chatLabel->setFontPath(comicSans);
+//	worldLst->push_back(chatLabel);
+//}
